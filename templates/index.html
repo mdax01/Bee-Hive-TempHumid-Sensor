@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hive Environmental Monitor</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="hex-icon" viewBox="0 0 52 52" xmlns="http://www.w3.org/2000/svg">
+      <polygon points="13,2 39,2 51,26 39,50 13,50 1,26" fill="#1a1f0a" stroke="#f5c518" stroke-width="2.5"/>
+      <text x="26" y="33" text-anchor="middle" font-size="22">&#x1F41D;</text>
+    </svg>
+    <h1>Hive Environmental Monitor</h1>
+  </div>
+  <div class="add-sensor-wrap">
+    <span class="add-sensor-label">Add Sensor</span>
+    <button id="addSensorBtn" class="icon-btn" title="Add Sensor">+</button>
+    <div id="discoverPanel" class="discover-panel hidden">
+      <div id="discoverEmpty" class="discover-empty hidden">No new sensors detected nearby.</div>
+      <select id="discoverSelect"></select>
+      <div class="discover-actions">
+        <button id="discoverChoose" class="btn">Select</button>
+        <button id="discoverCancel" class="btn btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section class="compare-section hidden">
+  <h2 class="compare-title">All Hives — Weekly Comparison</h2>
+  <div class="compare-chart-wrap">
+    <canvas id="compareChart"></canvas>
+  </div>
+</section>
+
+<main id="cards" class="cards"></main>
+
+<div id="nameModal" class="modal-backdrop hidden">
+  <div class="modal-box">
+    <h3>Name this hive</h3>
+    <p class="modal-mac" id="nameModalMac"></p>
+    <input id="hiveNameInput" type="text" placeholder="e.g. Hive 5" maxlength="40">
+    <div class="modal-actions">
+      <button id="hiveNameSave" class="btn">Save</button>
+      <button id="hiveNameCancel" class="btn btn-secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="overlay" class="overlay hidden">
+  <button id="overlayClose" class="overlay-close" title="Close">&times;</button>
+  <h2 id="overlayTitle"></h2>
+  <div class="overlay-chart-wrap">
+    <canvas id="overlayChart"></canvas>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

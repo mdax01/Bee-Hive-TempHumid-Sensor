@@ -1,0 +1,22 @@
+# NOTE: replace YOUR_USERNAME below with the output of `whoami` on the Pi,
+# then install with:
+#   sudo cp raspimonitor.service /etc/systemd/system/raspimonitor.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now raspimonitor
+
+[Unit]
+Description=Hive Environmental Monitor (RaspiMonitor)
+After=network.target bluetooth.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/YOUR_USERNAME/RaspiMonitor
+ExecStart=/home/YOUR_USERNAME/RaspiMonitor/venv/bin/python /home/YOUR_USERNAME/RaspiMonitor/app.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
