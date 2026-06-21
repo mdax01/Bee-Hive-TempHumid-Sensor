@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Info — Hive Environmental Monitor</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="hex-icon" viewBox="0 0 52 52" xmlns="http://www.w3.org/2000/svg">
+      <polygon points="13,2 39,2 51,26 39,50 13,50 1,26" fill="#1a1f0a" stroke="#f5c518" stroke-width="2.5"/>
+      <text x="26" y="33" text-anchor="middle" font-size="22">&#x1F41D;</text>
+    </svg>
+    <h1>Hive Environmental Monitor</h1>
+  </div>
+  <a href="/" class="btn btn-secondary">&larr; Dashboard</a>
+</header>
+
+<main class="info-page">
+  <a href="{{ repo_url }}" target="_blank" rel="noopener" class="info-repo-link">View on GitHub &rarr;</a>
+  <div class="info-readme">
+    {{ readme_html | safe }}
+  </div>
+</main>
+
+</body>
+</html>

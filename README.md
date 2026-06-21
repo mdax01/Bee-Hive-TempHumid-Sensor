@@ -7,6 +7,8 @@ CSV files, and serves a dark-themed web dashboard for live readings and historic
 graphs (today, weekly, monthly, year-to-date), with a UI flow for registering newly
 activated sensors — no code changes needed as you add more hives.
 
+Repo: https://github.com/mdax01/Bee-Hive-TempHumid-Sensor
+
 ## How it works
 
 - A single Python process runs a `bleak`-based BLE scanner in a background thread and
@@ -14,7 +16,9 @@ activated sensors — no code changes needed as you add more hives.
 - Govee H5074 sensors broadcast manufacturer data every few seconds containing the
   current temperature, humidity, and battery level — no pairing or polling required.
 - Each registered hive gets its own subdirectory (e.g. `Hive3/`) containing one CSV
-  file per day (`2026-06-20.csv`) with raw `timestamp,temp_f,hum,batt` rows.
+  file per day (`2026-06-20.csv`). Rows are throttled to once every 5 minutes per
+  hive (`WRITE_INTERVAL_SECONDS` in `app.py`) — that's already finer than the densest
+  graph (10-minute buckets), so there's no value in logging every single advertisement.
 - The dashboard reads those CSVs on demand to build the graphs; nothing is stored in
   a database.
 
@@ -34,7 +38,7 @@ activated sensors — no code changes needed as you add more hives.
 ## Install
 
 ```bash
-git clone <your-repo-url> RaspiMonitor
+git clone https://github.com/mdax01/Bee-Hive-TempHumid-Sensor.git RaspiMonitor
 cd RaspiMonitor
 
 python3 -m venv venv
@@ -86,12 +90,29 @@ rule ends in a wildcard).
 - Click **+ Add Sensor** (top right) to see any Govee H5074 sensors currently
   broadcasting nearby that aren't registered yet. Pick one and give it a hive name —
   it appears as a card immediately and starts logging. Already-registered sensors
-  never reappear in that list.
-- Each card shows the hive's current temp/humidity and an hour-by-hour graph for
-  today. **Weekly / Monthly / Year to Date** links open a larger view for that range;
-  click the **✕** to return to the dashboard.
-- The chart above the cards compares every hive's week-over-week temperature (shades
-  of red) and humidity (shades of blue) on one graph, each line labeled by hive name.
+  never reappear in that list. Cards and the comparison graph are ordered by the
+  number in each hive's name (Hive 1, Hive 2, ...), not by when they were added.
+- The **All Hives** chart at the top compares every hive on one graph — temperature by
+  default, with a button (top right of that chart) to switch to humidity and back.
+  Each hive gets a fixed color by its number (Hive 1 white, Hive 2 red, Hive 3 blue,
+  Hive 4 green; later hives get an auto-generated color), labeled directly on its
+  line. It defaults to today at 10-minute resolution; click it (or the **Weekly /
+  Monthly / Year to Date** links below it) for a larger view across that range, all
+  hives combined, same metric toggle.
+- Each hive's own card shows a colored dot matching its line color on the All Hives
+  graph, plus its current temp/humidity and a today-at-10-minutes graph with both
+  temp (red) and humidity (blue) lines — all cards share the same y-axis scale so
+  you can compare hives at a glance. Its own **Weekly / Monthly / Year to Date**
+  links open a larger single-hive view.
+- In any expanded view, use the **‹ ›** arrows on the sides of the chart to step
+  back/forward through prior periods (previous day/week/month/year) — the forward
+  arrow disables once you're back at the present. Click the **✕** to return to the
+  dashboard.
+- **Download Data** (below the cards): **Day / Month / Year** links each download one
+  raw CSV per registered hive for that period. Browsers may ask permission the first
+  time a page tries to trigger multiple downloads from one click — that's expected
+  for more than one hive.
+- **Info** (bottom right): opens this README along with a link to the GitHub repo.
 
 ## Data files
 

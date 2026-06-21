@@ -6,9 +6,11 @@ import logging
 import threading
 import time
 import asyncio
+import calendar
 from datetime import datetime, date, timedelta
 
-from flask import Flask, jsonify, request, render_template
+import markdown
+from flask import Flask, jsonify, request, render_template, Response
 from bleak import BleakScanner
 
 logging.basicConfig(
@@ -20,8 +22,11 @@ logging.getLogger("bleak").setLevel(logging.WARNING)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SENSORS_FILE = os.path.join(BASE_DIR, "sensors.json")
+README_PATH = os.path.join(BASE_DIR, "README.md")
+GITHUB_REPO_URL = "https://github.com/mdax01/Bee-Hive-TempHumid-Sensor"
 DISCOVERY_TTL_SECONDS = 300
 WATCHDOG_TIMEOUT_SECONDS = 90
+WRITE_INTERVAL_SECONDS = 5 * 60  # CSV writes are throttled to this cadence per hive
 
 app = Flask(__name__)
 
@@ -29,7 +34,7 @@ lock = threading.Lock()
 sensors = {}    # mac -> {name, folder, added}
 latest = {}     # mac -> {temp_f, hum, batt, last_seen}
 discovery = {}  # mac -> {raw_name, last_seen} for every Govee device seen recently
-last_written = {}  # mac -> last raw payload written to a hive's CSV, for dedup
+last_written_at = {}  # mac -> unix time of last CSV write, for write-rate throttling
 last_advertisement_ts = time.time()
 
 
@@ -78,8 +83,7 @@ def decode_govee(name, mfg_data, mac):
     if temp_f > 180.0 or temp_f < -30.0:
         return None
 
-    raw_key = bytes(payload)
-    return mac, name, temp_f, hum, battery, raw_key
+    return mac, name, temp_f, hum, battery
 
 
 def write_reading(folder, temp_f, hum, batt, ts):
@@ -99,18 +103,19 @@ def handle_govee_reading(mac, name, mfg_data):
         decoded = decode_govee(name, mfg_data, mac)
         if decoded is None:
             return
-        mac, raw_name, temp_f, hum, batt, raw_key = decoded
+        mac, raw_name, temp_f, hum, batt = decoded
         now = time.time()
 
         with lock:
             discovery[mac] = {"raw_name": raw_name, "last_seen": now}
             latest[mac] = {"temp_f": temp_f, "hum": hum, "batt": batt, "last_seen": now}
             hive = sensors.get(mac)
-            # last_written is scoped separately from discovery/latest so a value
-            # already seen before a hive was registered still gets its first write.
-            should_write = hive is not None and last_written.get(mac) != raw_key
+            # Raw advertisements arrive every 10-30s, far finer than any graph
+            # needs (the densest view buckets to 10 minutes), so writes are
+            # throttled per hive rather than on every changed reading.
+            should_write = hive is not None and (now - last_written_at.get(mac, 0)) >= WRITE_INTERVAL_SECONDS
             if should_write:
-                last_written[mac] = raw_key
+                last_written_at[mac] = now
 
         if should_write:
             write_reading(hive["folder"], temp_f, hum, batt, datetime.now())
@@ -161,6 +166,20 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/info")
+def info():
+    readme_html = ""
+    if os.path.exists(README_PATH):
+        with open(README_PATH) as f:
+            readme_html = markdown.markdown(f.read(), extensions=["fenced_code", "tables"])
+    return render_template("info.html", readme_html=readme_html, repo_url=GITHUB_REPO_URL)
+
+
+def hive_sort_key(name):
+    match = re.search(r"\d+", name)
+    return (0, int(match.group())) if match else (1, name)
+
+
 @app.route("/api/hives")
 def api_hives():
     with lock:
@@ -176,7 +195,7 @@ def api_hives():
             }
             for mac, info in sensors.items()
         ]
-    result.sort(key=lambda h: h["name"])
+    result.sort(key=lambda h: hive_sort_key(h["name"]))
     return jsonify(result)
 
 
@@ -236,53 +255,126 @@ def read_daily_average(folder, day):
     return round(sum(temps) / len(temps), 2), round(sum(hums) / len(hums), 2)
 
 
-def read_hourly_series(folder, day):
-    by_hour_temp = {h: [] for h in range(24)}
-    by_hour_hum = {h: [] for h in range(24)}
+TODAY_BUCKET_MINUTES = 10
+
+
+def read_bucketed_series(folder, day, bucket_minutes):
+    total_buckets = (24 * 60) // bucket_minutes
+    by_bucket_temp = {b: [] for b in range(total_buckets)}
+    by_bucket_hum = {b: [] for b in range(total_buckets)}
     for timestamp, t, h in read_day_rows(folder, day):
         try:
-            hour = int(timestamp[11:13])
+            hour, minute = int(timestamp[11:13]), int(timestamp[14:16])
         except (ValueError, IndexError):
             continue
-        by_hour_temp[hour].append(t)
-        by_hour_hum[hour].append(h)
+        bucket = (hour * 60 + minute) // bucket_minutes
+        by_bucket_temp[bucket].append(t)
+        by_bucket_hum[bucket].append(h)
 
     labels, temp, hum = [], [], []
-    for hour in range(24):
-        labels.append(str(hour))
-        temp.append(round(sum(by_hour_temp[hour]) / len(by_hour_temp[hour]), 2) if by_hour_temp[hour] else None)
-        hum.append(round(sum(by_hour_hum[hour]) / len(by_hour_hum[hour]), 2) if by_hour_hum[hour] else None)
+    for b in range(total_buckets):
+        hour, minute = divmod(b * bucket_minutes, 60)
+        labels.append(f"{hour:02d}:{minute:02d}")
+        temp.append(round(sum(by_bucket_temp[b]) / len(by_bucket_temp[b]), 2) if by_bucket_temp[b] else None)
+        hum.append(round(sum(by_bucket_hum[b]) / len(by_bucket_hum[b]), 2) if by_bucket_hum[b] else None)
     return labels, temp, hum
 
 
-def history_range(folder, rng):
-    today = date.today()
-    if rng == "today":
-        return read_hourly_series(folder, today)
+MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+               "July", "August", "September", "October", "November", "December"]
 
-    if rng == "month":
-        start = today.replace(day=1)
+
+def shifted_month(today, offset):
+    month_index = today.year * 12 + (today.month - 1) - offset
+    year, month0 = divmod(month_index, 12)
+    return year, month0 + 1
+
+
+def history_range(folder, rng, offset=0):
+    today = date.today()
+
+    if rng == "today":
+        target = today - timedelta(days=offset)
+        labels, temp, hum = read_bucketed_series(folder, target, TODAY_BUCKET_MINUTES)
+        label = f"{MONTH_NAMES[target.month - 1]} {target.day}, {target.year}"
+        return labels, temp, hum, label
+
+    if rng == "week":
+        end = today - timedelta(days=7 * offset)
+        start = end - timedelta(days=6)
+        label = (f"{MONTH_NAMES[start.month - 1][:3]} {start.day} – "
+                 f"{MONTH_NAMES[end.month - 1][:3]} {end.day}, {end.year}")
+    elif rng == "month":
+        year, month = shifted_month(today, offset)
+        start = date(year, month, 1)
+        month_end = date(year, month, calendar.monthrange(year, month)[1])
+        end = min(today, month_end) if offset == 0 else month_end
+        label = f"{MONTH_NAMES[month - 1]} {year}"
     elif rng == "ytd":
-        start = date(today.year, 1, 1)
+        year = today.year - offset
+        start = date(year, 1, 1)
+        end = today if offset == 0 else date(year, 12, 31)
+        label = str(year)
     else:
-        start = today - timedelta(days=6)
+        return [], [], [], ""
 
     labels, temp, hum = [], [], []
     d = start
-    while d <= today:
+    while d <= end:
         t, h = read_daily_average(folder, d)
         labels.append(d.isoformat())
         temp.append(t)
         hum.append(h)
         d += timedelta(days=1)
-    return labels, temp, hum
+    return labels, temp, hum, label
+
+
+def is_known_folder(folder):
+    return any(info["folder"] == folder for info in sensors.values())
 
 
 @app.route("/api/history/<folder>")
 def api_history(folder):
+    if not is_known_folder(folder):
+        return jsonify({"error": "unknown hive folder"}), 404
     rng = request.args.get("range", "today")
-    labels, temp, hum = history_range(folder, rng)
-    return jsonify({"labels": labels, "temp": temp, "hum": hum})
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        offset = 0
+    labels, temp, hum, label = history_range(folder, rng, offset)
+    return jsonify({"labels": labels, "temp": temp, "hum": hum, "label": label})
+
+
+@app.route("/api/export/<folder>")
+def api_export(folder):
+    if not is_known_folder(folder):
+        return jsonify({"error": "unknown hive folder"}), 404
+
+    rng = request.args.get("range", "day")
+    today = date.today()
+    if rng == "year":
+        start = date(today.year, 1, 1)
+    elif rng == "month":
+        start = today.replace(day=1)
+    else:
+        start = today
+
+    lines = ["timestamp,temp_f,hum,batt"]
+    d = start
+    while d <= today:
+        path = os.path.join(BASE_DIR, folder, f"{d.strftime('%Y-%m-%d')}.csv")
+        if os.path.exists(path):
+            with open(path) as f:
+                lines.extend(f.read().splitlines()[1:])
+        d += timedelta(days=1)
+
+    filename = f"{folder}_{rng}_{today.isoformat()}.csv"
+    return Response(
+        "\n".join(lines) + "\n",
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def main():

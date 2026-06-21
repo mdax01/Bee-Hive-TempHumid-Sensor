@@ -2,6 +2,8 @@ const POLL_MS = 20000;
 const charts = {}; // folder -> mini Chart instance
 let overlayChart = null;
 let compareChart = null;
+let lastHives = [];
+let lastTodayData = [];
 
 function fmt(val) {
   return (val === null || val === undefined) ? "—" : val;
@@ -11,6 +13,23 @@ function hiveColor(hue, index) {
   const lightness = Math.min(45 + index * 14, 82);
   return `hsl(${hue}, 75%, ${lightness}%)`;
 }
+
+// Fixed colors by hive number (parsed from the name) for the All Hives graph,
+// so a given hive is always the same color regardless of metric/order.
+const FIXED_HIVE_COLORS = ["#ffffff", "#ff3b30", "#2979ff", "#34c759"];
+
+function hiveNumber(name) {
+  const m = /\d+/.exec(name);
+  return m ? parseInt(m[0], 10) : null;
+}
+
+function hiveFixedColor(name, fallbackIndex) {
+  const n = hiveNumber(name);
+  if (n && FIXED_HIVE_COLORS[n - 1]) return FIXED_HIVE_COLORS[n - 1];
+  return hiveColor(280, fallbackIndex);
+}
+
+let compareMetric = "temp";
 
 function tickFormatterFor(range, rawLabels) {
   if (range === "today") {
@@ -119,7 +138,7 @@ function cardTemplate(hive) {
   div.className = "card";
   div.dataset.folder = hive.folder;
   div.innerHTML = `
-    <h2 class="hive-name"></h2>
+    <h2 class="hive-name"><span class="hive-dot"></span><span class="hive-name-label"></span></h2>
     <div class="readings">
       <span class="temp"></span>
       <span class="hum"></span>
@@ -141,92 +160,134 @@ function cardTemplate(hive) {
   return div;
 }
 
-function updateCard(div, hive) {
-  div.querySelector(".hive-name").textContent = hive.name;
+function updateCard(div, hive, index) {
+  div.querySelector(".hive-name-label").textContent = hive.name;
+  div.querySelector(".hive-dot").style.backgroundColor = hiveFixedColor(hive.name, index);
   div.querySelector(".temp").innerHTML = `${fmt(hive.temp_f)}<span class="unit">°F</span>`;
   div.querySelector(".hum").innerHTML = `${fmt(hive.hum)}<span class="unit">%</span>`;
 }
 
-async function refreshMiniChart(div, hive) {
-  const data = await fetchJSON(`/api/history/${hive.folder}?range=today`);
-  const canvas = div.querySelector(".mini-chart-wrap canvas");
-  if (charts[hive.folder]) {
-    charts[hive.folder].data.labels = data.labels;
-    charts[hive.folder].data.datasets[0].data = data.temp;
-    charts[hive.folder].data.datasets[1].data = data.hum;
-    charts[hive.folder].options.scales.x.ticks.callback = tickFormatterFor("today", data.labels);
-    charts[hive.folder].update();
+// Computes a shared, padded min/max across all hives' values for a metric, so
+// every card's y-axis lines up and visual comparison between hives is direct.
+function sharedRange(valueArrays) {
+  const nums = [];
+  for (const arr of valueArrays) {
+    for (const v of arr) {
+      if (v !== null && v !== undefined) nums.push(v);
+    }
+  }
+  if (nums.length === 0) return null;
+  let min = Math.min(...nums);
+  let max = Math.max(...nums);
+  if (min === max) { min -= 1; max += 1; }
+  const pad = (max - min) * 0.08;
+  return { min: Math.floor(min - pad), max: Math.ceil(max + pad) };
+}
+
+function applyRange(scaleOptions, range) {
+  if (range) {
+    scaleOptions.min = range.min;
+    scaleOptions.max = range.max;
   } else {
-    charts[hive.folder] = new Chart(canvas, buildLineConfig(data.labels, data.temp, data.hum, "today"));
+    delete scaleOptions.min;
+    delete scaleOptions.max;
   }
 }
 
-async function refreshCompareChart(hives) {
+function renderMiniChart(div, hive, data, tempRange, humRange) {
+  if (!data) return;
+  const canvas = div.querySelector(".mini-chart-wrap canvas");
+  if (charts[hive.folder]) {
+    const chart = charts[hive.folder];
+    chart.data.labels = data.labels;
+    chart.data.datasets[0].data = data.temp;
+    chart.data.datasets[1].data = data.hum;
+    chart.options.scales.x.ticks.callback = tickFormatterFor("today", data.labels);
+    applyRange(chart.options.scales.yTemp, tempRange);
+    applyRange(chart.options.scales.yHum, humRange);
+    chart.update();
+  } else {
+    const config = buildLineConfig(data.labels, data.temp, data.hum, "today");
+    applyRange(config.options.scales.yTemp, tempRange);
+    applyRange(config.options.scales.yHum, humRange);
+    charts[hive.folder] = new Chart(canvas, config);
+  }
+}
+
+function datasetsFromSeries(hives, series, metric) {
+  let rawLabels = null;
+  let label = "";
+  const datasets = [];
+  const axisId = metric === "hum" ? "yHum" : "yTemp";
+  hives.forEach((hive, i) => {
+    const data = series[i];
+    if (!data) return;
+    rawLabels = rawLabels || data.labels;
+    label = label || data.label;
+    datasets.push({
+      label: hive.name,
+      data: metric === "hum" ? data.hum : data.temp,
+      borderColor: hiveFixedColor(hive.name, i),
+      backgroundColor: "transparent",
+      yAxisID: axisId,
+      spanGaps: false,
+      tension: 0.25,
+      pointRadius: 2,
+    });
+  });
+  return { rawLabels, datasets, label };
+}
+
+async function buildCompareSeries(hives, range, offset, metric) {
+  const series = await Promise.all(
+    hives.map((hive) => fetchJSON(`/api/history/${hive.folder}?range=${range}&offset=${offset}`).catch(() => null))
+  );
+  return datasetsFromSeries(hives, series, metric);
+}
+
+function compareChartOptions(rawLabels, range, metric) {
+  const scales = {
+    x: { ticks: { color: "#8fa0c0", callback: tickFormatterFor(range, rawLabels) }, grid: { color: "#1c2c4d" } },
+  };
+  if (metric === "hum") {
+    scales.yHum = { position: "left", ticks: { color: "#2979ff" }, grid: { color: "#1c2c4d" } };
+  } else {
+    scales.yTemp = { position: "left", ticks: { color: "#ff3b30" }, grid: { color: "#1c2c4d" } };
+  }
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    layout: { padding: { right: 70 } },
+    interaction: { mode: "nearest", intersect: false },
+    plugins: { legend: { display: false } },
+    scales,
+  };
+}
+
+const COMPARE_RANGE = "today";
+
+function compareTitleText(metric) {
+  return `All Hives ${metric === "hum" ? "Humidity" : "Temperature"}`;
+}
+
+function refreshCompareChart(hives, todayData) {
   const section = document.querySelector(".compare-section");
   if (hives.length === 0) {
     section.classList.add("hidden");
     return;
   }
   section.classList.remove("hidden");
+  document.querySelector(".compare-title").textContent = compareTitleText(compareMetric);
 
-  const series = await Promise.all(
-    hives.map((hive) => fetchJSON(`/api/history/${hive.folder}?range=week`).catch(() => null))
-  );
-
-  let rawLabels = null;
-  const datasets = [];
-  hives.forEach((hive, i) => {
-    const data = series[i];
-    if (!data) return;
-    rawLabels = rawLabels || data.labels;
-    datasets.push({
-      label: hive.name,
-      data: data.temp,
-      borderColor: hiveColor(355, i),
-      backgroundColor: "transparent",
-      yAxisID: "yTemp",
-      spanGaps: false,
-      tension: 0.25,
-      pointRadius: 2,
-    });
-    datasets.push({
-      label: hive.name,
-      data: data.hum,
-      borderColor: hiveColor(212, i),
-      backgroundColor: "transparent",
-      yAxisID: "yHum",
-      spanGaps: false,
-      tension: 0.25,
-      pointRadius: 2,
-    });
-  });
+  const { rawLabels, datasets } = datasetsFromSeries(hives, todayData, compareMetric);
   if (!rawLabels) return;
 
-  const tickCb = tickFormatterFor("week", rawLabels);
-  if (compareChart) {
-    compareChart.data.labels = rawLabels;
-    compareChart.data.datasets = datasets;
-    compareChart.options.scales.x.ticks.callback = tickCb;
-    compareChart.update();
-    return;
-  }
-
+  if (compareChart) compareChart.destroy();
   compareChart = new Chart(document.getElementById("compareChart"), {
     type: "line",
     data: { labels: rawLabels, datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
-      layout: { padding: { right: 70 } },
-      interaction: { mode: "nearest", intersect: false },
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: "#8fa0c0", callback: tickCb }, grid: { color: "#1c2c4d" } },
-        yTemp: { position: "left", ticks: { color: "#ff3b30" }, grid: { color: "#1c2c4d" } },
-        yHum: { position: "right", ticks: { color: "#2979ff" }, grid: { display: false } },
-      },
-    },
+    options: compareChartOptions(rawLabels, COMPARE_RANGE, compareMetric),
     plugins: [lineEndLabelPlugin],
   });
 }
@@ -239,22 +300,33 @@ async function pollHives() {
     console.error("failed to load hives", e);
     return;
   }
+
+  lastHives = hives;
+  document.getElementById("exportHeader").classList.toggle("hidden", hives.length === 0);
+
+  const todayData = await Promise.all(
+    hives.map((hive) => fetchJSON(`/api/history/${hive.folder}?range=today`).catch(() => null))
+  );
+  lastTodayData = todayData;
+  const tempRange = sharedRange(todayData.filter(Boolean).map((d) => d.temp));
+  const humRange = sharedRange(todayData.filter(Boolean).map((d) => d.hum));
+
   const cardsEl = document.getElementById("cards");
   const seen = new Set();
-  for (const hive of hives) {
+  hives.forEach((hive, i) => {
     seen.add(hive.folder);
     let div = cardsEl.querySelector(`.card[data-folder="${hive.folder}"]`);
     if (!div) {
       div = cardTemplate(hive);
-      cardsEl.appendChild(div);
     }
-    updateCard(div, hive);
-    refreshMiniChart(div, hive).catch((e) => console.error(e));
-  }
+    cardsEl.appendChild(div); // re-appending an existing node moves it, keeping DOM order in sync with hives' sort order
+    updateCard(div, hive, i);
+    renderMiniChart(div, hive, todayData[i], tempRange, humRange);
+  });
   cardsEl.querySelectorAll(".card").forEach((div) => {
     if (!seen.has(div.dataset.folder)) div.remove();
   });
-  refreshCompareChart(hives).catch((e) => console.error(e));
+  refreshCompareChart(hives, todayData);
 }
 
 // ---- Add Sensor flow ----
@@ -349,25 +421,114 @@ const overlay = document.getElementById("overlay");
 const overlayTitle = document.getElementById("overlayTitle");
 const overlayClose = document.getElementById("overlayClose");
 const overlayCanvas = document.getElementById("overlayChart");
+const overlayPrev = document.getElementById("overlayPrev");
+const overlayNext = document.getElementById("overlayNext");
+const overlayMetricBtn = document.getElementById("overlayMetricBtn");
 const RANGE_LABEL = { today: "Today", week: "Weekly", month: "Monthly", ytd: "Year to Date" };
 
-function currentMonthName() {
-  return new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" });
+function rangeWord(range, offset) {
+  if (range === "today") return offset === 0 ? "Today" : "Daily";
+  if (range === "ytd") return offset === 0 ? "Year to Date" : "Yearly";
+  return RANGE_LABEL[range] || range;
 }
 
-async function openOverlay(folder, hiveName, range) {
-  let title = `${hiveName} — ${RANGE_LABEL[range] || range}`;
-  if (range === "month") title += ` (${currentMonthName()})`;
-  overlayTitle.textContent = title;
+let overlayState = { mode: null, folder: null, hiveName: null, range: null, offset: 0 };
+
+async function renderOverlay() {
+  const { mode, folder, hiveName, range, offset } = overlayState;
   overlay.classList.remove("hidden");
-  const data = await fetchJSON(`/api/history/${folder}?range=${range}`);
-  if (overlayChart) overlayChart.destroy();
-  overlayChart = new Chart(overlayCanvas, buildLineConfig(data.labels, data.temp, data.hum, range, { legend: true, pointRadius: 3 }));
+  overlayNext.disabled = offset === 0;
+  overlayMetricBtn.classList.toggle("hidden", mode !== "compare");
+  overlayMetricBtn.textContent = compareMetric === "hum" ? "Temperature" : "Humidity";
+
+  let label = "";
+  let titleSubject = hiveName;
+  if (mode === "compare") {
+    titleSubject = compareTitleText(compareMetric);
+    const hives = await fetchJSON("/api/hives");
+    const built = await buildCompareSeries(hives, range, offset, compareMetric);
+    label = built.label;
+    if (overlayChart) overlayChart.destroy();
+    overlayChart = built.rawLabels
+      ? new Chart(overlayCanvas, {
+          type: "line",
+          data: { labels: built.rawLabels, datasets: built.datasets },
+          options: compareChartOptions(built.rawLabels, range, compareMetric),
+          plugins: [lineEndLabelPlugin],
+        })
+      : null;
+  } else {
+    const data = await fetchJSON(`/api/history/${folder}?range=${range}&offset=${offset}`);
+    label = data.label;
+    if (overlayChart) overlayChart.destroy();
+    overlayChart = new Chart(overlayCanvas, buildLineConfig(data.labels, data.temp, data.hum, range, { legend: true, pointRadius: 3 }));
+  }
+
+  overlayTitle.textContent = `${titleSubject} — ${rangeWord(range, offset)}${label ? ` (${label})` : ""}`;
 }
+
+function navOverlay(delta) {
+  overlayState.offset = Math.max(0, overlayState.offset + delta);
+  renderOverlay().catch((e) => console.error(e));
+}
+
+function openOverlay(folder, hiveName, range) {
+  overlayState = { mode: "single", folder, hiveName, range, offset: 0 };
+  return renderOverlay();
+}
+
+function openCompareOverlay(range) {
+  overlayState = { mode: "compare", folder: null, hiveName: "All Hives", range, offset: 0 };
+  return renderOverlay();
+}
+
+overlayPrev.addEventListener("click", () => navOverlay(1));
+overlayNext.addEventListener("click", () => navOverlay(-1));
+
 overlayClose.addEventListener("click", () => {
   overlay.classList.add("hidden");
   if (overlayChart) { overlayChart.destroy(); overlayChart = null; }
 });
+
+document.getElementById("compareChartWrap").addEventListener("click", () => {
+  openCompareOverlay(COMPARE_RANGE).catch((e) => console.error(e));
+});
+document.querySelectorAll(".compare-section .range-links a").forEach((a) => {
+  a.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openCompareOverlay(a.dataset.range).catch((err) => console.error(err));
+  });
+});
+
+const compareMetricBtn = document.getElementById("compareMetricBtn");
+
+function setCompareMetric(metric) {
+  compareMetric = metric;
+  const offerText = metric === "hum" ? "Temperature" : "Humidity";
+  compareMetricBtn.textContent = offerText;
+  if (lastHives.length) refreshCompareChart(lastHives, lastTodayData);
+  if (!overlay.classList.contains("hidden") && overlayState.mode === "compare") {
+    renderOverlay().catch((e) => console.error(e));
+  }
+}
+
+compareMetricBtn.addEventListener("click", () => setCompareMetric(compareMetric === "temp" ? "hum" : "temp"));
+overlayMetricBtn.addEventListener("click", () => setCompareMetric(compareMetric === "temp" ? "hum" : "temp"));
+
+// ---- CSV export ----
+function downloadExport(range) {
+  lastHives.forEach((hive) => {
+    const a = document.createElement("a");
+    a.href = `/api/export/${hive.folder}?range=${range}`;
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+}
+document.getElementById("exportDay").addEventListener("click", () => downloadExport("day"));
+document.getElementById("exportMonth").addEventListener("click", () => downloadExport("month"));
+document.getElementById("exportYear").addEventListener("click", () => downloadExport("year"));
 
 // ---- init ----
 pollHives();
