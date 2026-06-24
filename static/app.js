@@ -81,8 +81,12 @@ const lineEndLabelPlugin = {
 // Maps a log entry's timestamp onto the same discrete buckets the chart already
 // uses (10-min buckets for "today", calendar days otherwise), so its vertical
 // line lines up with the data point it actually happened near.
-function eventIndexForRange(rawLabels, range, isoTimestamp) {
+function eventIndexForRange(rawLabels, range, isoTimestamp, targetDate) {
   if (range === "today") {
+    // "today" labels are bare times of day ("14:30") reused on every date, so
+    // a time-of-day match alone isn't enough — the event's own date must
+    // match the specific date this chart is actually showing.
+    if (!targetDate || isoTimestamp.slice(0, 10) !== targetDate) return -1;
     const [hh, mm] = isoTimestamp.slice(11, 16).split(":").map(Number);
     const bucket = Math.floor((hh * 60 + mm) / 10) * 10;
     const label = `${String(Math.floor(bucket / 60)).padStart(2, "0")}:${String(bucket % 60).padStart(2, "0")}`;
@@ -91,11 +95,11 @@ function eventIndexForRange(rawLabels, range, isoTimestamp) {
   return rawLabels.indexOf(isoTimestamp.slice(0, 10));
 }
 
-function buildEventMarkerDataset(rawLabels, range, events) {
+function buildEventMarkerDataset(rawLabels, range, events, targetDate) {
   const textByIndex = {};
   const data = rawLabels.map(() => null);
   (events || []).forEach((ev) => {
-    const idx = eventIndexForRange(rawLabels, range, ev.timestamp);
+    const idx = eventIndexForRange(rawLabels, range, ev.timestamp, targetDate);
     if (idx === -1) return;
     data[idx] = 0;
     textByIndex[idx] = ev.text;
@@ -178,7 +182,7 @@ function buildLineConfig(rawLabels, temp, hum, range, opts) {
 
   let textByIndex = {};
   if (opts.events && opts.events.length) {
-    const marker = buildEventMarkerDataset(rawLabels, range, opts.events);
+    const marker = buildEventMarkerDataset(rawLabels, range, opts.events, opts.date);
     textByIndex = marker.textByIndex;
     datasets.push(marker.dataset);
     scales.yEvent = { display: false, min: -1, max: 1 };
@@ -283,7 +287,7 @@ function renderMiniChart(div, hive, data, tempRange, humRange, events) {
   // Whether the event-marker dataset is present can change poll to poll, so
   // the dataset shape isn't stable enough to patch in place — recreate instead.
   if (charts[hive.folder]) charts[hive.folder].destroy();
-  const config = buildLineConfig(data.labels, data.temp, data.hum, "today", { events });
+  const config = buildLineConfig(data.labels, data.temp, data.hum, "today", { events, date: data.date });
   applyRange(config.options.scales.yTemp, tempRange);
   applyRange(config.options.scales.yHum, humRange);
   charts[hive.folder] = new Chart(canvas, config);
@@ -542,7 +546,7 @@ async function renderOverlay() {
     ]);
     label = data.label;
     if (overlayChart) overlayChart.destroy();
-    overlayChart = new Chart(overlayCanvas, buildLineConfig(data.labels, data.temp, data.hum, range, { legend: true, pointRadius: 3, events }));
+    overlayChart = new Chart(overlayCanvas, buildLineConfig(data.labels, data.temp, data.hum, range, { legend: true, pointRadius: 3, events, date: data.date }));
   }
 
   overlayTitle.textContent = `${titleSubject} — ${rangeWord(range, offset)}${label ? ` (${label})` : ""}`;

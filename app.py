@@ -397,7 +397,12 @@ def api_history(folder):
     except ValueError:
         offset = 0
     labels, temp, hum, label = history_range(folder, rng, offset)
-    return jsonify({"labels": labels, "temp": temp, "hum": hum, "label": label})
+    response = {"labels": labels, "temp": temp, "hum": hum, "label": label}
+    if rng == "today":
+        # Lets the frontend confirm a log entry actually happened on the date
+        # being shown, not just at a matching time-of-day on some other date.
+        response["date"] = (date.today() - timedelta(days=offset)).isoformat()
+    return jsonify(response)
 
 
 @app.route("/api/export/<folder>")
