@@ -78,49 +78,132 @@ const lineEndLabelPlugin = {
   },
 };
 
+// Maps a log entry's timestamp onto the same discrete buckets the chart already
+// uses (10-min buckets for "today", calendar days otherwise), so its vertical
+// line lines up with the data point it actually happened near.
+function eventIndexForRange(rawLabels, range, isoTimestamp) {
+  if (range === "today") {
+    const [hh, mm] = isoTimestamp.slice(11, 16).split(":").map(Number);
+    const bucket = Math.floor((hh * 60 + mm) / 10) * 10;
+    const label = `${String(Math.floor(bucket / 60)).padStart(2, "0")}:${String(bucket % 60).padStart(2, "0")}`;
+    return rawLabels.indexOf(label);
+  }
+  return rawLabels.indexOf(isoTimestamp.slice(0, 10));
+}
+
+function buildEventMarkerDataset(rawLabels, range, events) {
+  const textByIndex = {};
+  const data = rawLabels.map(() => null);
+  (events || []).forEach((ev) => {
+    const idx = eventIndexForRange(rawLabels, range, ev.timestamp);
+    if (idx === -1) return;
+    data[idx] = 0;
+    textByIndex[idx] = ev.text;
+  });
+  return {
+    textByIndex,
+    dataset: {
+      label: "Event",
+      isEventMarker: true,
+      data,
+      borderColor: "transparent",
+      backgroundColor: "transparent",
+      pointRadius: 0,
+      pointHoverRadius: 6,
+      pointHitRadius: 10,
+      showLine: false,
+      yAxisID: "yEvent",
+      spanGaps: false,
+    },
+  };
+}
+
+// Draws a vertical line at each logged event's bucket. The marker dataset
+// itself is invisible (radius 0) — this plugin does the actual drawing —
+// and only exists so Chart.js's normal tooltip/hover machinery can surface
+// the event text without a second, separate hover system.
+const eventLinePlugin = {
+  id: "eventLine",
+  afterDraw(chart) {
+    const dsIndex = chart.data.datasets.findIndex((d) => d.isEventMarker);
+    if (dsIndex === -1) return;
+    const meta = chart.getDatasetMeta(dsIndex);
+    const { ctx, chartArea } = chart;
+    chart.data.datasets[dsIndex].data.forEach((value, i) => {
+      if (value === null || value === undefined) return;
+      const point = meta.data[i];
+      if (!point) return;
+      ctx.save();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(point.x, chartArea.top);
+      ctx.lineTo(point.x, chartArea.bottom);
+      ctx.stroke();
+      ctx.restore();
+    });
+  },
+};
+
 function buildLineConfig(rawLabels, temp, hum, range, opts) {
   opts = opts || {};
+  const datasets = [
+    {
+      label: "Temp (°F)",
+      data: temp,
+      borderColor: "#ff3b30",
+      backgroundColor: "transparent",
+      yAxisID: "yTemp",
+      spanGaps: false,
+      tension: 0.25,
+      pointRadius: opts.pointRadius ?? 2,
+    },
+    {
+      label: "Humidity (%)",
+      data: hum,
+      borderColor: "#2979ff",
+      backgroundColor: "transparent",
+      yAxisID: "yHum",
+      spanGaps: false,
+      tension: 0.25,
+      pointRadius: opts.pointRadius ?? 2,
+    },
+  ];
+
+  const scales = {
+    x: { ticks: { color: "#8fa0c0", callback: tickFormatterFor(range, rawLabels) }, grid: { color: "#1c2c4d" } },
+    yTemp: { position: "left", ticks: { color: "#ff3b30" }, grid: { color: "#1c2c4d" } },
+    yHum: { position: "right", ticks: { color: "#2979ff" }, grid: { display: false } },
+  };
+
+  let textByIndex = {};
+  if (opts.events && opts.events.length) {
+    const marker = buildEventMarkerDataset(rawLabels, range, opts.events);
+    textByIndex = marker.textByIndex;
+    datasets.push(marker.dataset);
+    scales.yEvent = { display: false, min: -1, max: 1 };
+  }
+
   return {
     type: "line",
-    data: {
-      labels: rawLabels,
-      datasets: [
-        {
-          label: "Temp (°F)",
-          data: temp,
-          borderColor: "#ff3b30",
-          backgroundColor: "transparent",
-          yAxisID: "yTemp",
-          spanGaps: false,
-          tension: 0.25,
-          pointRadius: opts.pointRadius ?? 2,
-        },
-        {
-          label: "Humidity (%)",
-          data: hum,
-          borderColor: "#2979ff",
-          backgroundColor: "transparent",
-          yAxisID: "yHum",
-          spanGaps: false,
-          tension: 0.25,
-          pointRadius: opts.pointRadius ?? 2,
-        },
-      ],
-    },
+    data: { labels: rawLabels, datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       animation: false,
       interaction: { mode: "index", intersect: false },
       plugins: {
-        legend: { display: !!opts.legend, labels: { color: "#e8edf7" } },
+        legend: { display: !!opts.legend, labels: { color: "#e8edf7", filter: (item) => item.text !== "Event" } },
+        tooltip: {
+          filter: (item) => !(item.dataset.isEventMarker && (item.raw === null || item.raw === undefined)),
+          callbacks: {
+            label: (item) => (item.dataset.isEventMarker ? textByIndex[item.dataIndex] || "" : `${item.dataset.label}: ${item.formattedValue}`),
+          },
+        },
       },
-      scales: {
-        x: { ticks: { color: "#8fa0c0", callback: tickFormatterFor(range, rawLabels) }, grid: { color: "#1c2c4d" } },
-        yTemp: { position: "left", ticks: { color: "#ff3b30" }, grid: { color: "#1c2c4d" } },
-        yHum: { position: "right", ticks: { color: "#2979ff" }, grid: { display: false } },
-      },
+      scales,
     },
+    plugins: [eventLinePlugin],
   };
 }
 
@@ -194,24 +277,16 @@ function applyRange(scaleOptions, range) {
   }
 }
 
-function renderMiniChart(div, hive, data, tempRange, humRange) {
+function renderMiniChart(div, hive, data, tempRange, humRange, events) {
   if (!data) return;
   const canvas = div.querySelector(".mini-chart-wrap canvas");
-  if (charts[hive.folder]) {
-    const chart = charts[hive.folder];
-    chart.data.labels = data.labels;
-    chart.data.datasets[0].data = data.temp;
-    chart.data.datasets[1].data = data.hum;
-    chart.options.scales.x.ticks.callback = tickFormatterFor("today", data.labels);
-    applyRange(chart.options.scales.yTemp, tempRange);
-    applyRange(chart.options.scales.yHum, humRange);
-    chart.update();
-  } else {
-    const config = buildLineConfig(data.labels, data.temp, data.hum, "today");
-    applyRange(config.options.scales.yTemp, tempRange);
-    applyRange(config.options.scales.yHum, humRange);
-    charts[hive.folder] = new Chart(canvas, config);
-  }
+  // Whether the event-marker dataset is present can change poll to poll, so
+  // the dataset shape isn't stable enough to patch in place — recreate instead.
+  if (charts[hive.folder]) charts[hive.folder].destroy();
+  const config = buildLineConfig(data.labels, data.temp, data.hum, "today", { events });
+  applyRange(config.options.scales.yTemp, tempRange);
+  applyRange(config.options.scales.yHum, humRange);
+  charts[hive.folder] = new Chart(canvas, config);
 }
 
 function datasetsFromSeries(hives, series, metric) {
@@ -308,6 +383,9 @@ async function pollHives() {
     hives.map((hive) => fetchJSON(`/api/history/${hive.folder}?range=today`).catch(() => null))
   );
   lastTodayData = todayData;
+  const eventsData = await Promise.all(
+    hives.map((hive) => fetchJSON(`/api/logs/${hive.folder}/chart`).catch(() => []))
+  );
   const tempRange = sharedRange(todayData.filter(Boolean).map((d) => d.temp));
   const humRange = sharedRange(todayData.filter(Boolean).map((d) => d.hum));
 
@@ -321,7 +399,7 @@ async function pollHives() {
     }
     cardsEl.appendChild(div); // re-appending an existing node moves it, keeping DOM order in sync with hives' sort order
     updateCard(div, hive, i);
-    renderMiniChart(div, hive, todayData[i], tempRange, humRange);
+    renderMiniChart(div, hive, todayData[i], tempRange, humRange, eventsData[i]);
   });
   cardsEl.querySelectorAll(".card").forEach((div) => {
     if (!seen.has(div.dataset.folder)) div.remove();
@@ -458,10 +536,13 @@ async function renderOverlay() {
         })
       : null;
   } else {
-    const data = await fetchJSON(`/api/history/${folder}?range=${range}&offset=${offset}`);
+    const [data, events] = await Promise.all([
+      fetchJSON(`/api/history/${folder}?range=${range}&offset=${offset}`),
+      fetchJSON(`/api/logs/${folder}/chart`).catch(() => []),
+    ]);
     label = data.label;
     if (overlayChart) overlayChart.destroy();
-    overlayChart = new Chart(overlayCanvas, buildLineConfig(data.labels, data.temp, data.hum, range, { legend: true, pointRadius: 3 }));
+    overlayChart = new Chart(overlayCanvas, buildLineConfig(data.labels, data.temp, data.hum, range, { legend: true, pointRadius: 3, events }));
   }
 
   overlayTitle.textContent = `${titleSubject} — ${rangeWord(range, offset)}${label ? ` (${label})` : ""}`;
@@ -529,6 +610,31 @@ function downloadExport(range) {
 document.getElementById("exportDay").addEventListener("click", () => downloadExport("day"));
 document.getElementById("exportMonth").addEventListener("click", () => downloadExport("month"));
 document.getElementById("exportYear").addEventListener("click", () => downloadExport("year"));
+
+// ---- Log hive picker ----
+const logHiveModal = document.getElementById("logHiveModal");
+const logHiveSelect = document.getElementById("logHiveSelect");
+
+document.getElementById("logLink").addEventListener("click", async (e) => {
+  e.preventDefault();
+  const hives = lastHives.length ? lastHives : await fetchJSON("/api/hives").catch(() => []);
+  if (hives.length === 0) {
+    alert("No hives registered yet.");
+    return;
+  }
+  logHiveSelect.innerHTML = "";
+  hives.forEach((hive) => {
+    const opt = document.createElement("option");
+    opt.value = hive.folder;
+    opt.textContent = hive.name;
+    logHiveSelect.appendChild(opt);
+  });
+  logHiveModal.classList.remove("hidden");
+});
+document.getElementById("logHiveCancel").addEventListener("click", () => logHiveModal.classList.add("hidden"));
+document.getElementById("logHiveGo").addEventListener("click", () => {
+  window.location.href = `/log/${logHiveSelect.value}`;
+});
 
 // ---- init ----
 pollHives();

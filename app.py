@@ -7,10 +7,14 @@ import threading
 import time
 import asyncio
 import calendar
+import uuid
 from datetime import datetime, date, timedelta
+
+from functools import wraps
 
 import markdown
 from flask import Flask, jsonify, request, render_template, Response
+from werkzeug.security import check_password_hash
 from bleak import BleakScanner
 
 logging.basicConfig(
@@ -23,10 +27,40 @@ logging.getLogger("bleak").setLevel(logging.WARNING)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SENSORS_FILE = os.path.join(BASE_DIR, "sensors.json")
 README_PATH = os.path.join(BASE_DIR, "README.md")
+EXPORT_AUTH_FILE = os.path.join(BASE_DIR, ".export_auth_hash")
 GITHUB_REPO_URL = "https://github.com/mdax01/Bee-Hive-TempHumid-Sensor"
+LOG_FILENAME = "ACTIONS.LOGGED"
 DISCOVERY_TTL_SECONDS = 300
 WATCHDOG_TIMEOUT_SECONDS = 90
 WRITE_INTERVAL_SECONDS = 5 * 60  # CSV writes are throttled to this cadence per hive
+
+# These admin-ish endpoints (data export, the README/info page, and viewing or
+# editing hive logs) are reachable from the internet (e.g. via a Cloudflare
+# Tunnel), so they're gated by a password whose hash lives in a local, gitignored
+# file — never in source, never sent to the browser. Missing file = disabled.
+def load_export_password_hash():
+    if os.path.exists(EXPORT_AUTH_FILE):
+        with open(EXPORT_AUTH_FILE) as f:
+            return f.read().strip()
+    return None
+
+
+EXPORT_PASSWORD_HASH = load_export_password_hash()
+
+
+def require_admin_auth(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not EXPORT_PASSWORD_HASH:
+            return jsonify({"error": "admin password not configured"}), 401
+        auth = request.authorization
+        if not auth or not check_password_hash(EXPORT_PASSWORD_HASH, auth.password):
+            return Response(
+                "Authentication required", 401,
+                {"WWW-Authenticate": 'Basic realm="RaspiMonitor admin"'},
+            )
+        return view(*args, **kwargs)
+    return wrapped
 
 app = Flask(__name__)
 
@@ -167,6 +201,7 @@ def index():
 
 
 @app.route("/info")
+@require_admin_auth
 def info():
     readme_html = ""
     if os.path.exists(README_PATH):
@@ -347,6 +382,7 @@ def api_history(folder):
 
 
 @app.route("/api/export/<folder>")
+@require_admin_auth
 def api_export(folder):
     if not is_known_folder(folder):
         return jsonify({"error": "unknown hive folder"}), 404
@@ -375,6 +411,92 @@ def api_export(folder):
         mimetype="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def logs_path(folder):
+    return os.path.join(BASE_DIR, folder, LOG_FILENAME)
+
+
+def read_logs(folder):
+    path = logs_path(folder)
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def write_logs(folder, entries):
+    hive_dir = os.path.join(BASE_DIR, folder)
+    os.makedirs(hive_dir, exist_ok=True)
+    with open(logs_path(folder), "w") as f:
+        json.dump(entries, f, indent=2)
+
+
+@app.route("/api/logs/<folder>/chart")
+def api_logs_chart(folder):
+    # Public and unauthenticated on purpose: checking "Show on Chart" is the
+    # user's own choice to surface that one entry on the (otherwise public)
+    # dashboard graphs, so only checked entries' timestamp/text are exposed here.
+    if not is_known_folder(folder):
+        return jsonify({"error": "unknown hive folder"}), 404
+    visible = [e for e in read_logs(folder) if e.get("show_on_chart")]
+    return jsonify([{"timestamp": e["timestamp"], "text": e["text"]} for e in visible])
+
+
+@app.route("/api/logs/<folder>")
+@require_admin_auth
+def api_logs_list(folder):
+    if not is_known_folder(folder):
+        return jsonify({"error": "unknown hive folder"}), 404
+    entries = sorted(read_logs(folder), key=lambda e: e["timestamp"], reverse=True)
+    return jsonify(entries)
+
+
+@app.route("/api/logs/<folder>", methods=["POST"])
+@require_admin_auth
+def api_logs_create(folder):
+    if not is_known_folder(folder):
+        return jsonify({"error": "unknown hive folder"}), 404
+    body = request.get_json(silent=True) or {}
+    timestamp = (body.get("timestamp") or "").strip()
+    text = (body.get("text") or "").strip()
+    if not timestamp or not text:
+        return jsonify({"error": "timestamp and text are required"}), 400
+
+    entries = read_logs(folder)
+    entry = {"id": uuid.uuid4().hex[:8], "timestamp": timestamp, "text": text, "show_on_chart": False}
+    entries.append(entry)
+    write_logs(folder, entries)
+    return jsonify(entry), 201
+
+
+@app.route("/api/logs/<folder>/<entry_id>", methods=["PATCH"])
+@require_admin_auth
+def api_logs_update(folder, entry_id):
+    if not is_known_folder(folder):
+        return jsonify({"error": "unknown hive folder"}), 404
+    body = request.get_json(silent=True) or {}
+
+    entries = read_logs(folder)
+    for entry in entries:
+        if entry["id"] == entry_id:
+            if "show_on_chart" in body:
+                entry["show_on_chart"] = bool(body["show_on_chart"])
+            write_logs(folder, entries)
+            return jsonify(entry)
+    return jsonify({"error": "entry not found"}), 404
+
+
+@app.route("/log/<folder>")
+@require_admin_auth
+def log_page(folder):
+    if not is_known_folder(folder):
+        return "Unknown hive", 404
+    hive_name = next((info["name"] for info in sensors.values() if info["folder"] == folder), folder)
+    return render_template("log.html", folder=folder, hive_name=hive_name)
 
 
 def main():

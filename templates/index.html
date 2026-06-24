@@ -52,8 +52,22 @@
       <a id="exportDay">Day</a> · <a id="exportMonth">Month</a> · <a id="exportYear">Year</a>
     </div>
   </div>
-  <a href="/info" class="info-link">Info</a>
+  <div class="footer-links">
+    <a href="#" id="logLink" class="info-link">Log</a>
+    <a href="/info" class="info-link">Info</a>
+  </div>
 </section>
+
+<div id="logHiveModal" class="modal-backdrop hidden">
+  <div class="modal-box">
+    <h3>View Log For</h3>
+    <select id="logHiveSelect"></select>
+    <div class="modal-actions">
+      <button id="logHiveGo" class="btn">Open</button>
+      <button id="logHiveCancel" class="btn btn-secondary">Cancel</button>
+    </div>
+  </div>
+</div>
 
 <div id="nameModal" class="modal-backdrop hidden">
   <div class="modal-box">

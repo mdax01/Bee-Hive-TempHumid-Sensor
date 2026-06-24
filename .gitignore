@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 sensors.json
 Hive*/
+.export_auth_hash

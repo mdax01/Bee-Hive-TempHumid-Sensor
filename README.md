@@ -111,8 +111,42 @@ rule ends in a wildcard).
 - **Download Data** (below the cards): **Day / Month / Year** links each download one
   raw CSV per registered hive for that period. Browsers may ask permission the first
   time a page tries to trigger multiple downloads from one click — that's expected
-  for more than one hive.
+  for more than one hive. If you've exposed the dashboard to the internet (e.g. via a
+  Cloudflare Tunnel), these three endpoints are password-protected (see below) so
+  they can't be hammered by anyone with the URL; your browser will show its native
+  login prompt the first time you click one and remember it for the session.
+- **Log** (bottom right, left of Info): pick a hive to view, add, or manage logged
+  events for it — e.g. "Opened Entrance 2", with a date/time picker. Each hive's
+  entries live in `ACTIONS.LOGGED` inside its own folder. Check **Show on Chart** on
+  any entry to plot it as a vertical white line on that hive's own graphs (today,
+  weekly, monthly, year-to-date) at the matching point in time; hovering the line
+  shows just that entry's text, nothing else. Uncheck it later to remove the line.
+  This only affects that one hive's single-hive graphs, not the All Hives comparison
+  chart. Requires the same password as Download Data (see below).
 - **Info** (bottom right): opens this README along with a link to the GitHub repo.
+  Also requires the same password.
+
+### Password-protecting Download Data, Info, and the hive logs
+
+The main dashboard (live readings, all the graphs, Add Sensor) is intentionally open
+— it's just readings. But data export, the README/Info page, and viewing or editing
+a hive's logged events are all gated by one shared password, since `/api/export/*`
+does real file I/O per request and the log endpoints let you write data, both worth
+locking down if you've put the Pi on the public internet. Only checked ("Show on
+Chart") log entries are exposed unauthenticated, via a separate read-only endpoint —
+that's the one piece of log data the public dashboard's own graphs need to render.
+
+The password is never stored in source or sent to the browser — only a one-way hash
+lives on disk, in a gitignored file the app reads at startup:
+
+```bash
+venv/bin/python -c "from werkzeug.security import generate_password_hash; print(generate_password_hash('your-password-here'))" > .export_auth_hash
+chmod 600 .export_auth_hash
+sudo systemctl restart raspimonitor
+```
+
+If `.export_auth_hash` doesn't exist, the export routes simply refuse all requests
+(fail closed) rather than silently allowing unauthenticated access.
 
 ## Data files
 
@@ -122,6 +156,7 @@ RaspiMonitor/
   Hive3/
     2026-06-20.csv    # timestamp,temp_f,hum,batt — one file per day, append-only
     2026-06-21.csv
+    ACTIONS.LOGGED    # JSON array of {id, timestamp, text, show_on_chart} entries
   Hive4/
     ...
 ```

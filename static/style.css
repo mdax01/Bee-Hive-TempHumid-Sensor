@@ -86,7 +86,8 @@ body {
 .export-header .range-links a { color: var(--text-subdued); }
 .export-header .range-links a:hover { color: var(--text-dim); }
 
-.info-link { margin-left: auto; color: var(--text-subdued); font-size: 13px; cursor: pointer; text-decoration: underline; }
+.footer-links { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+.info-link { color: var(--text-subdued); font-size: 13px; cursor: pointer; text-decoration: underline; }
 .info-link:hover { color: var(--text-dim); }
 
 .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
@@ -111,7 +112,7 @@ body {
 .modal-box { background: var(--card-bg-2); border: 1px solid var(--border); border-radius: 10px; padding: 20px; width: 320px; }
 .modal-box h3 { margin: 0 0 6px; }
 .modal-mac { color: var(--text-dim); font-size: 12px; margin: 0 0 12px; }
-.modal-box input {
+.modal-box input, .modal-box select {
   width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border);
   background: var(--bg); color: var(--text); margin-bottom: 14px; font-size: 14px;
 }
@@ -173,3 +174,21 @@ body {
 .info-readme th, .info-readme td {
   border: 1px solid var(--border); padding: 6px 10px; text-align: left; color: var(--text-dim);
 }
+
+.log-page { max-width: 640px; margin: 0 auto; padding: 28px 24px 60px; }
+.log-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+.log-toolbar-label { color: var(--text-dim); font-size: 14px; }
+.log-empty { color: var(--text-dim); }
+.log-entries { display: flex; flex-direction: column; gap: 10px; }
+.log-entry {
+  display: flex; align-items: center; gap: 16px; background: var(--card-bg);
+  border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px;
+}
+.log-entry-checkbox {
+  display: flex; align-items: center; gap: 6px; color: var(--text-dim);
+  font-size: 12px; white-space: nowrap; cursor: pointer; flex-shrink: 0;
+}
+.log-entry-checkbox input { width: auto; margin: 0; }
+.log-entry-body { flex: 1; min-width: 0; }
+.log-entry-time { color: var(--text-dim); font-size: 12px; margin-bottom: 2px; }
+.log-entry-text { color: var(--text); font-size: 15px; }
