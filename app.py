@@ -13,7 +13,7 @@ from datetime import datetime, date, timedelta
 from functools import wraps
 
 import markdown
-from flask import Flask, jsonify, request, render_template, Response
+from flask import Flask, jsonify, request, render_template, Response, url_for
 from werkzeug.security import check_password_hash
 from bleak import BleakScanner
 
@@ -63,6 +63,25 @@ def require_admin_auth(view):
     return wrapped
 
 app = Flask(__name__)
+# Static files default to a long browser cache lifetime, which causes stale
+# HTML/CSS/JS mismatches after a deploy. Assets here are tiny and change
+# rarely enough that always revalidating is the safer default.
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+
+
+@app.template_global()
+def asset_url(filename):
+    # Appends the file's mtime as a version tag so every deploy gets a brand
+    # new URL — this defeats caching at any layer (browser, Cloudflare, etc.)
+    # without needing to disable caching everywhere, since the old URL simply
+    # stops being referenced once the file (and its mtime) changes.
+    path = os.path.join(app.static_folder, filename)
+    try:
+        version = int(os.path.getmtime(path))
+    except OSError:
+        version = 0
+    return f"{url_for('static', filename=filename)}?v={version}"
+
 
 lock = threading.Lock()
 sensors = {}    # mac -> {name, folder, added}

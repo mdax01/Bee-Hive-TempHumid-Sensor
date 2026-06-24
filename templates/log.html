@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{ hive_name }} Log — Hive Environmental Monitor</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<link rel="stylesheet" href="{{ asset_url('style.css') }}">
 </head>
 <body>
 
@@ -42,6 +42,6 @@
 <script>
 const LOG_FOLDER = {{ folder | tojson }};
 </script>
-<script src="{{ url_for('static', filename='log.js') }}"></script>
+<script src="{{ asset_url('log.js') }}"></script>
 </body>
 </html>
